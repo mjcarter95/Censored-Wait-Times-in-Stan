@@ -16,12 +16,26 @@ for d in [data_dir, model_dir, output_dir]:
     d.mkdir(parents=True, exist_ok=True)
 
 # Step 1: Simulate Data
-def simulate_censored_gamma(alpha, beta, N, T):
+def simulate_censored_gamma(alpha, beta, N, T_aggressive, T_passive, p_aggressive=0.5):
+    """
+    Simulate censored samples from a Gamma(alpha, beta) distribution,
+    where each sample is censored using either T_aggressive or T_passive,
+    chosen randomly with probability p_aggressive and 1 - p_aggressive respectively.
+    """
     scale = 1 / beta
     samples = np.random.gamma(shape=alpha, scale=scale, size=N)
-    complete = samples[samples <= T]
-    censored = samples[samples > T]
-    return complete, np.full_like(censored, T), samples
+
+    # Randomly assign censoring thresholds
+    use_aggressive = np.random.rand(N) < p_aggressive
+    thresholds = np.where(use_aggressive, T_aggressive, T_passive)
+
+    # Apply censoring
+    is_censored = samples > thresholds
+    complete = samples[~is_censored]
+    censored = thresholds[is_censored]
+
+    return complete, censored, samples, thresholds
+
 
 
 # Step 2: Save JSON data for Stan
@@ -68,7 +82,8 @@ def fit_model(model_path, data_path, output_dir):
         parallel_chains=4,
         iter_warmup=1000,
         iter_sampling=1000,
-        show_progress=True
+        show_progress=True,
+        seed=42,
     )
     return fit
 
@@ -78,7 +93,8 @@ def plot_stan_gamma_posterior(
     betas,
     true_alpha,
     true_beta,
-    T,
+    T_passive,
+    T_aggressive,
     complete=None,
     output_path=None
 ):
@@ -126,7 +142,8 @@ def plot_stan_gamma_posterior(
     plt.axvline(stan_mean, color='blue', linestyle='--',
                 label=f"Stan mean ≈ {stan_mean:.2f} ± {stan_mean_std:.2f}", marker='^')
     plt.axvline(true_mean, color='green', linestyle='--', label=f"True mean = {true_mean:.2f}", marker='o')
-    plt.axvline(T, color='red', linestyle='--', label=f"Censoring threshold T = {T}", marker='x')
+    plt.axvline(T_passive, color='red', linestyle='--', label=f"Passive censoring threshold T_passive = {T_passive}", marker='x')
+    plt.axvline(T_aggressive, color='orange', linestyle='--', label=f"Aggressive censoring threshold T_aggressive = {T_aggressive}", marker='x')
 
     plt.xlabel("x")
     plt.ylabel("Density")
@@ -159,9 +176,10 @@ def plot_posterior_means(alphas, betas, true_alpha, true_beta, output_path=None)
 
 def main():
     np.random.seed(42)
-    true_alpha, true_beta, N, T = 2.0, 1.5, 10000, 3.0
+    true_alpha, true_beta, N = 2.0, 1.5, 10000
+    T_aggressive, T_passive = 1.5, 3.0
 
-    complete, censored, all_samples = simulate_censored_gamma(true_alpha, true_beta, N, T)
+    complete, censored, all_samples, thresholds = simulate_censored_gamma(true_alpha, true_beta, N, T_aggressive, T_passive)
     json_path = data_dir / "gamma_data.json"
     model_path = model_dir / "censored_gamma.stan"
     prepare_stan_data(complete, censored, json_path)
@@ -174,7 +192,8 @@ def main():
         betas=fit.stan_variable("beta"),
         true_alpha=true_alpha,
         true_beta=true_beta,
-        T=T,
+        T_passive=T_passive,
+        T_aggressive=T_aggressive,
         complete=complete,
         output_path=Path("gamma_fit_plot.png")
     )
